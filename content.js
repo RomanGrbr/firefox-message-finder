@@ -1,87 +1,279 @@
-// content.js
 console.log('🔥 Message Finder: расширение загружено!');
 
-// Режим отладки - установи true для тестирования без проверок
-const DEBUG_MODE = true; // Меняй на false для реальной работы
+// ==================== КОНСТАНТЫ ====================
+const DEBUG_MODE = true;
 
+const DELAY_MIN = 2000;
+const DELAY_MAX = 5000;
+
+const SKIP_MIN = 4;
+const SKIP_MAX = 6;
+
+const COMMENT_COOLDOWN = 300000; // 5 минут в мс
+const TARGET_AUTHOR = 'Роман Гербер';
+
+const RENDER_DELAYS = {
+  INIT: 1000,
+  HOVER: 800,
+  PANEL: 2000,
+  INPUT: 500,
+  SUBMIT: 1000
+};
+
+// ==================== УТИЛИТЫ ====================
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ==================== ИЗВЛЕЧЕНИЕ ДАННЫХ ====================
+class DataExtractor {
+  static getMessageId(element) {
+    return parseInt(element.getAttribute('data-message-id'));
+  }
+
+  static getMessageNumber(text) {
+    const match = text.match(/\[(\d+)\]/);
+    return match ? parseInt(match[1]) : null;
+  }
+
+  static getMessageEmail(text) {
+    const match = text.match(/\(([^)]+@[^)]+)\)/);
+    return match ? match[1] : null;
+  }
+
+  static getMessageAuthor(element) {
+    const authorEl = element.querySelector('.text-foreground.cursor-pointer');
+    return authorEl ? authorEl.textContent.trim() : '';
+  }
+
+  static hasCommentsIndicator(element) {
+    return element.querySelector('.flex.flex-wrap.gap-1 button') !== null;
+  }
+
+  static getMessageText(element) {
+    const textEl = element.querySelector('.markup p');
+    return textEl ? textEl.textContent.trim() : '';
+  }
+}
+
+// ==================== ВЗАИМОДЕЙСТВИЕ С UI ====================
+class UIManager {
+  async hoverMessage(element) {
+    element.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, cancelable: true, view: window }));
+    element.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+    await delay(RENDER_DELAYS.HOVER);
+  }
+
+  async openCommentPanel(messageElement) {
+    await this.hoverMessage(messageElement);
+
+    let buttonContainer = messageElement.querySelector('div[class*="group-hover/message"]') ||
+                         messageElement.querySelector('div[class*="group-hover"][class*="hidden"]');
+    if (!buttonContainer) return null;
+
+    const buttons = buttonContainer.querySelectorAll('button');
+    if (buttons.length === 0) return null;
+
+    let commentButton = null;
+    for (let btn of buttons) {
+      const ariaLabel = btn.getAttribute('aria-label');
+      if (ariaLabel?.includes('thread') || ariaLabel?.includes('Discuss')) {
+        commentButton = btn;
+        break;
+      }
+    }
+    if (!commentButton && buttons.length >= 2) commentButton = buttons[1];
+    if (!commentButton) return null;
+
+    commentButton.click();
+    await delay(RENDER_DELAYS.PANEL);
+
+    const panel = document.querySelector('div[class*="box-border"][class*="min-w-[350px]"]');
+    return panel;
+  }
+
+  getMessagesInPanel(panel) {
+    return panel.querySelectorAll('div[data-message-id]');
+  }
+
+  getLastMessageInPanel(panel) {
+    const messages = this.getMessagesInPanel(panel);
+    if (messages.length === 0) return null;
+    let maxId = -1;
+    let last = null;
+    messages.forEach(msg => {
+      const id = DataExtractor.getMessageId(msg);
+      if (id > maxId) {
+        maxId = id;
+        last = msg;
+      }
+    });
+    return last;
+  }
+
+  async closePanel(panel) {
+    const closeButton = panel.querySelector('button svg.lucide-x')?.closest('button');
+    if (closeButton) {
+      closeButton.click();
+      await delay(200);
+    }
+  }
+
+  async enterComment(panel, text) {
+    const editableDiv = panel.querySelector('div[contenteditable="true"].ProseMirror');
+    if (!editableDiv) return false;
+
+    editableDiv.focus();
+    editableDiv.innerHTML = '';
+    const p = document.createElement('p');
+    p.textContent = text;
+    editableDiv.appendChild(p);
+    editableDiv.dispatchEvent(new Event('input', { bubbles: true }));
+    await delay(RENDER_DELAYS.INPUT);
+    return true;
+  }
+
+  async submitComment(panel) {
+    const sendButton = panel.querySelector('button[class*="bg-primary"]');
+    if (sendButton) {
+      sendButton.click();
+      await delay(RENDER_DELAYS.SUBMIT);
+      return true;
+    } else {
+      const editableDiv = panel.querySelector('div[contenteditable="true"].ProseMirror');
+      if (editableDiv) {
+        const enterEvent = new KeyboardEvent('keydown', {
+          key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+          bubbles: true, cancelable: true
+        });
+        editableDiv.dispatchEvent(enterEvent);
+        await delay(RENDER_DELAYS.SUBMIT);
+        return true;
+      }
+    }
+    return false;
+  }
+}
+
+// ==================== ВАЛИДАЦИЯ ====================
+class MessageValidator {
+  constructor(targetAuthor, cooldown) {
+    this.targetAuthor = targetAuthor;
+    this.cooldown = cooldown;
+  }
+
+  // Базовая проверка: номер не 1/20 и нет комментариев
+  basicValidation(number, hasComments) {
+    if (number === null) return false;
+    if (number === 1 || number === 20) return false;
+    if (hasComments) return false;
+    return true;
+  }
+
+  isTargetAuthor(element) {
+    const author = DataExtractor.getMessageAuthor(element);
+    return author === this.targetAuthor;
+  }
+}
+
+// ==================== ЗАГЛУШКА ДЛЯ TELEGRAM ====================
+class TelegramNotifier {
+  constructor() {
+    this.enabled = false;
+    this.commandListeners = [];
+  }
+
+  enable() { this.enabled = true; }
+  disable() { this.enabled = false; }
+
+  async sendMessage(text) {
+    if (!this.enabled) return;
+    console.log(`[TELEGRAM] ${text}`);
+    // Здесь будет реальный API
+  }
+
+  onCommand(callback) {
+    this.commandListeners.push(callback);
+  }
+
+  // Заглушка для получения команд (можно вызывать вручную из консоли)
+  simulateCommand(cmd) {
+    this.commandListeners.forEach(fn => fn(cmd));
+  }
+}
+
+// ==================== ОСНОВНОЙ КЛАСС ====================
 class MessageFinder {
   constructor() {
     this.lastMessageId = 0;
     this.initialMaxId = 0;
-    this.foundMessages = new Map();
     this.messageSelector = 'div[data-message-id]';
     this.initializationComplete = false;
-    
+
     this.commentedHistory = [];
     this.maxHistorySize = 10;
-    
-    console.log(`🔍 Message Finder инициализирован ${DEBUG_MODE ? '(РЕЖИМ ОТЛАДКИ)' : ''}`);
-    
-    // Загружаем историю
+    this.messageCounter = 0;
+    this.skipCounter = this.getRandomSkip();
+
+    this.ui = new UIManager();
+    this.validator = new MessageValidator(TARGET_AUTHOR, COMMENT_COOLDOWN);
+    this.telegram = new TelegramNotifier();
+
+    // Для управления очередью и блокировкой
+    this.busy = false;
+    this.pendingMessage = null;        // сообщение, ожидающее таймера
+    this.pendingTimeout = null;
+    this.messageQueue = [];            // очередь сообщений, пришедших во время busy
+
+    // Хранилище времени обнаружения сообщений (id -> timestamp)
+    this.detectedTimes = new Map();
+
     this.loadHistory();
-    
-    // Запускаем поиск максимального ID
     this.initialize();
   }
-  
+
+  getRandomSkip() {
+    return Math.floor(Math.random() * (SKIP_MAX - SKIP_MIN + 1)) + SKIP_MIN;
+  }
+
   async initialize() {
-    // Ждем немного, чтобы DOM точно загрузился
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Находим максимальный ID
+    await delay(RENDER_DELAYS.INIT);
     this.findMaxMessageId();
   }
-  
+
   findMaxMessageId() {
-    console.log('🔎 Ищем максимальный ID среди существующих сообщений...');
-    
-    const messageBlocks = document.querySelectorAll(this.messageSelector);
-    console.log(`📊 Найдено элементов с data-message-id: ${messageBlocks.length}`);
-    
-    if (messageBlocks.length > 0) {
-      // Ищем максимум простым перебором
-      let maxId = -1;
-      let latestMessage = null;
-      
-      messageBlocks.forEach(block => {
-        const id = parseInt(block.getAttribute('data-message-id'));
-        if (id > maxId) {
-          maxId = id;
-          latestMessage = block;
-        }
-      });
-      
-      if (latestMessage) {
-        this.initialMaxId = maxId;
-        this.lastMessageId = maxId;
-        
-        console.log(`🏆 МАКСИМАЛЬНЫЙ ID: ${maxId}`);
-        console.log(`📍 Отправная точка: сообщения с ID > ${maxId} будут считаться новыми`);
-        
-        // Подсвечиваем самое свежее
-        this.markAsLatest(latestMessage);
-        
-        // Запускаем наблюдение
-        this.initializationComplete = true;
-        this.observeNewMessages();
-      }
-    } else {
-      console.log('❌ Сообщения не найдены, начинаем наблюдение с 0');
+    const blocks = document.querySelectorAll(this.messageSelector);
+    if (blocks.length === 0) {
       this.initialMaxId = 0;
       this.initializationComplete = true;
       this.observeNewMessages();
+      return;
     }
+
+    let maxId = -1;
+    let latest = null;
+    blocks.forEach(block => {
+      const id = DataExtractor.getMessageId(block);
+      if (id > maxId) {
+        maxId = id;
+        latest = block;
+      }
+    });
+
+    this.initialMaxId = maxId;
+    this.lastMessageId = maxId;
+    this.markAsLatest(latest);
+    this.initializationComplete = true;
+    this.observeNewMessages();
   }
-  
+
   markAsLatest(element) {
     this.clearMarks();
-    
     if (window.getComputedStyle(element).position === 'static') {
       element.style.position = 'relative';
     }
-    
     element.style.border = '2px solid #0000ff';
-    
+
     const label = document.createElement('span');
     label.className = 'message-finder-label';
     label.textContent = '🔵 ПОСЛЕДНЕЕ';
@@ -97,277 +289,238 @@ class MessageFinder {
       border-radius: 0 0 5px 0;
       pointer-events: none;
     `;
-    
     element.appendChild(label);
   }
-  
+
   observeNewMessages() {
-    const observer = new MutationObserver((mutations) => {
+    const observer = new MutationObserver(mutations => {
       if (!this.initializationComplete) return;
-      
       let newMessages = [];
-      
-      mutations.forEach(mutation => {
-        if (mutation.addedNodes.length > 0) {
-          mutation.addedNodes.forEach(node => {
+      mutations.forEach(mut => {
+        if (mut.addedNodes.length) {
+          mut.addedNodes.forEach(node => {
             if (node.nodeType === Node.ELEMENT_NODE) {
-              if (node.matches && node.matches(this.messageSelector)) {
+              if (node.matches?.(this.messageSelector)) {
                 newMessages.push(node);
               }
-              
-              const innerMessages = node.querySelectorAll 
-                ? node.querySelectorAll(this.messageSelector) 
-                : [];
-              if (innerMessages.length > 0) {
-                newMessages.push(...innerMessages);
-              }
+              const inner = node.querySelectorAll?.(this.messageSelector) || [];
+              if (inner.length) newMessages.push(...inner);
             }
           });
         }
       });
-      
-      if (newMessages.length > 0) {
-        this.processNewMessages(newMessages);
-      }
+      if (newMessages.length) this.processNewMessages(newMessages);
     });
-    
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-    
-    console.log('👀 Наблюдаю за новыми сообщениями...');
+    observer.observe(document.body, { childList: true, subtree: true });
   }
-  
-  extractEmail(text) {
-    const emailMatch = text.match(/\(([^)]+@[^)]+)\)/);
-    return emailMatch ? emailMatch[1] : null;
-  }
-  
-  async clickCommentButton(messageElement) {
-    console.log('🖱️ Пытаемся нажать кнопку комментария...');
-    
-    try {
-      // 1. Наводим мышь на сообщение, чтобы появились кнопки
-      messageElement.dispatchEvent(new MouseEvent('mouseenter', {
-        bubbles: true,
-        cancelable: true,
-        view: window
-      }));
-      
-      // 2. Ждем появления кнопок
-      await new Promise(resolve => setTimeout(resolve, 200));
-      
-      // 3. Ищем кнопку комментария
-      let commentButton = null;
-      
-      // Способ 1: По атрибуту aria-label
-      commentButton = messageElement.querySelector('button[aria-label="Discuss in&nbsp;thread"]');
-      
-      // Способ 2: По SVG внутри
-      if (!commentButton) {
-        commentButton = messageElement.querySelector('button svg[stroke="currentColor"]')?.closest('button');
+
+  async processNewMessages(messages) {
+    for (const el of messages) {
+      const id = DataExtractor.getMessageId(el);
+      if (id <= this.initialMaxId) continue;
+
+      // Сохраняем время обнаружения
+      if (!this.detectedTimes.has(id)) {
+        this.detectedTimes.set(id, Date.now());
       }
-      
-      // Способ 3: По классу и позиции
-      if (!commentButton) {
-        const buttons = messageElement.querySelectorAll('.group-hover\\/message\\:flex\\! button');
-        if (buttons.length >= 2) {
-          commentButton = buttons[1];
-        }
+
+      // Если уже обрабатывали это сообщение (по id)
+      if (id <= this.lastProcessedId) continue;
+      this.lastProcessedId = id;
+      this.lastMessageId = id;
+
+      // Пропуск по счётчику
+      this.messageCounter++;
+      if (this.messageCounter % this.skipCounter === 0) {
+        this.skipCounter = this.getRandomSkip();
+        continue;
       }
-      
-      // Способ 4: По контейнеру
-      if (!commentButton) {
-        const buttonContainer = messageElement.querySelector('.group-hover\\/message\\:flex\\!');
-        if (buttonContainer) {
-          const buttons = buttonContainer.querySelectorAll('button');
-          if (buttons.length >= 2) {
-            commentButton = buttons[1];
-          }
-        }
+
+      // Если заняты, кладём в очередь
+      if (this.busy) {
+        this.messageQueue.push(el);
+        continue;
       }
-      
-      if (commentButton) {
-        console.log('✅ Кнопка найдена, кликаем');
-        
-        await new Promise(resolve => setTimeout(resolve, 100));
-        commentButton.click();
-        
-        console.log('✅ Клик выполнен');
-        
-        // Ждем появления поля для комментария
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        const textarea = document.querySelector('textarea[placeholder*="комментари"], textarea[placeholder*="Comment"]');
-        if (textarea) {
-          console.log('📝 Поле для комментария появилось');
-        }
-        
-        return true;
-      } else {
-        console.log('❌ Кнопка не найдена');
-        return false;
-      }
-      
-    } catch (error) {
-      console.error('❌ Ошибка при клике:', error);
-      return false;
+
+      await this.handleNewMessage(el);
     }
   }
-  
-  processNewMessages(messages) {
-    messages.forEach(messageElement => {
-      const messageId = parseInt(messageElement.getAttribute('data-message-id'));
-      
-      // Проверяем, что ID больше начального максимального
-      if (messageId > this.initialMaxId) {
-        console.log(`✨ НОВОЕ СООБЩЕНИЕ ID: ${messageId} (новое, т.к. > ${this.initialMaxId})`);
-        
-        this.lastMessageId = messageId;
-        this.foundMessages.set(messageId, messageElement);
-        
-        // В РЕЖИМЕ ОТЛАДКИ - комментируем ВСЕ новые сообщения
-        if (DEBUG_MODE) {
-          console.log(`   🧪 РЕЖИМ ОТЛАДКИ: комментируем сообщение ${messageId}`);
-          
-          // Просто вызываем клик без проверок
-          this.clickCommentButton(messageElement);
-          
-          // Не добавляем в историю в режиме отладки
-          console.log('   🤖 ТЕСТОВЫЙ КЛИК!');
-          return; // Выходим, не выполняем остальные проверки
-        }
-        
-        // НОРМАЛЬНЫЙ РЕЖИМ - со всеми проверками
-        const analysis = this.analyzeMessage(messageElement);
-        
-        if (analysis.bracketNumber && analysis.email) {
-          analysis.wasCommented = this.isAlreadyCommented(analysis.bracketNumber, analysis.email);
-        }
-        
-        const needsComment = analysis.bracketNumber !== null && 
-                            analysis.bracketNumber !== 1 && 
-                            analysis.bracketNumber !== 20 && 
-                            !analysis.hasComments &&
-                            !analysis.wasCommented;
-        
-        if (needsComment) {
-          console.log(`   🎯 ЦЕЛЬ: [${analysis.bracketNumber}] ${analysis.email}`);
-          console.log(`   Текст: ${analysis.text.substring(0, 100)}...`);
-          
-          this.clickCommentButton(messageElement);
-          
-          this.addToHistory({
-            id: messageId,
-            bracketNumber: analysis.bracketNumber,
-            email: analysis.email,
-            text: analysis.text
-          });
-          
-          console.log('   🤖 КОММЕНТИРУЕМ!');
-        } else {
-          let reason = '';
-          if (!analysis.bracketNumber) reason = 'нет числа';
-          else if (analysis.bracketNumber === 1 || analysis.bracketNumber === 20) reason = `число ${analysis.bracketNumber}`;
-          else if (analysis.hasComments) reason = 'уже есть комментарии';
-          else if (analysis.wasCommented) reason = 'было в истории';
-          console.log(`   ⏭️ Пропущено: ${reason}`);
-        }
+
+  async handleNewMessage(element) {
+    const text = DataExtractor.getMessageText(element);
+    const number = DataExtractor.getMessageNumber(text);
+    const hasComments = DataExtractor.hasCommentsIndicator(element);
+
+    if (!this.validator.basicValidation(number, hasComments)) {
+      await this.handleNonTargetMessage(element);
+      return;
+    }
+
+    // Проверяем автора
+    const isTarget = this.validator.isTargetAuthor(element);
+
+    if (isTarget) {
+      // Ставим в ожидание на 5 минут от времени обнаружения
+      const detectedTime = this.detectedTimes.get(DataExtractor.getMessageId(element));
+      const timePassed = Date.now() - detectedTime;
+      const waitTime = Math.max(0, COMMENT_COOLDOWN - timePassed);
+
+      if (waitTime > 0) {
+        this.busy = true;
+        this.pendingMessage = element;
+        console.log(`⏳ Ожидание ${waitTime/1000}с перед комментированием (автор ${TARGET_AUTHOR})`);
+
+        this.pendingTimeout = setTimeout(async () => {
+          // По истечении таймера комментируем сообщение
+          await this.commentOnMessage(this.pendingMessage);
+          this.pendingMessage = null;
+          this.pendingTimeout = null;
+          this.busy = false;
+          // Обрабатываем накопившуюся очередь
+          await this.processQueue();
+        }, waitTime);
       } else {
-        console.log(`   ⏭️ Игнорируем ID: ${messageId} (старое, <= ${this.initialMaxId})`);
+        // Уже прошло 5 минут (например, если сообщение долго висело до обнаружения)
+        await this.commentOnMessage(element);
       }
-    });
+    } else {
+      // Автор не целевой – комментируем сразу
+      await this.commentOnMessage(element);
+    }
   }
-  
-  analyzeMessage(element) {
-    const textElement = element.querySelector('.markup p');
-    const text = textElement ? textElement.textContent.trim() : '';
-    
-    const bracketMatch = text.match(/\[(\d+)\]/);
-    const bracketNumber = bracketMatch ? parseInt(bracketMatch[1]) : null;
-    
-    const email = this.extractEmail(text);
-    
-    const commentBlock = element.querySelector('.flex.flex-wrap.gap-1 button');
-    const hasComments = commentBlock !== null;
-    
-    return {
-      text: text,
-      bracketNumber: bracketNumber,
-      email: email,
-      hasComments: hasComments,
-      wasCommented: false
-    };
+
+  async handleNonTargetMessage(element) {
+    const panel = await this.ui.openCommentPanel(element);
+    if (!panel) return;
+
+    const messagesInPanel = this.ui.getMessagesInPanel(panel);
+    if (messagesInPanel.length > 1) {
+      const last = this.ui.getLastMessageInPanel(panel);
+      // Можно сохранить информацию о последнем комментаторе, если нужно
+    }
+
+    await this.ui.closePanel(panel);
   }
-  
+
+  async commentOnMessage(element) {
+    const panel = await this.ui.openCommentPanel(element);
+    if (!panel) return;
+
+    const messagesInPanel = this.ui.getMessagesInPanel(panel);
+    if (messagesInPanel.length > 1) {
+      // Уже есть комментарии – не наши
+      await this.ui.closePanel(panel);
+      return;
+    }
+
+    const success = await this.ui.enterComment(panel, '+');
+    if (success) {
+      await this.ui.submitComment(panel);
+      await this.telegram.sendMessage(`Прокомментировано сообщение ID ${DataExtractor.getMessageId(element)}`);
+    }
+
+    await this.ui.closePanel(panel);
+  }
+
+  async processQueue() {
+    while (this.messageQueue.length > 0 && !this.busy) {
+      const next = this.messageQueue.shift();
+      await this.handleNewMessage(next);
+    }
+  }
+
+  // ========== УПРАВЛЕНИЕ ПАУЗОЙ (ЗАГЛУШКИ ДЛЯ TELEGRAM) ==========
+  pause() {
+    if (this.pendingTimeout) {
+      clearTimeout(this.pendingTimeout);
+      this.pendingTimeout = null;
+    }
+    this.busy = true;
+    console.log('⏸️ Работа приостановлена');
+  }
+
+  resume() {
+    this.busy = false;
+    console.log('▶️ Работа возобновлена');
+    this.processQueue();
+  }
+
+  // ========== ИСТОРИЯ ==========
   loadHistory() {
     try {
       const saved = localStorage.getItem('messageFinderHistory');
-      if (saved) {
-        this.commentedHistory = JSON.parse(saved);
-        console.log('📚 Загружена история комментариев:', this.commentedHistory.length, 'записей');
-      }
-    } catch (e) {
-      console.log('⚠️ Не удалось загрузить историю');
-    }
+      if (saved) this.commentedHistory = JSON.parse(saved);
+    } catch (e) {}
   }
-  
+
   saveHistory() {
     try {
       localStorage.setItem('messageFinderHistory', JSON.stringify(this.commentedHistory));
-    } catch (e) {
-      console.log('⚠️ Не удалось сохранить историю');
-    }
+    } catch (e) {}
   }
-  
-  addToHistory(messageData) {
-    const historyEntry = {
-      id: messageData.id,
-      bracketNumber: messageData.bracketNumber,
-      email: messageData.email,
+
+  addToHistory(data) {
+    const entry = {
+      id: data.id,
+      bracketNumber: data.bracketNumber,
+      email: data.email,
       timestamp: Date.now(),
-      key: `${messageData.bracketNumber}|${messageData.email}`
+      key: `${data.bracketNumber}|${data.email}`
     };
-    
-    this.commentedHistory.unshift(historyEntry);
-    
+    this.commentedHistory.unshift(entry);
     if (this.commentedHistory.length > this.maxHistorySize) {
       this.commentedHistory = this.commentedHistory.slice(0, this.maxHistorySize);
     }
-    
     this.saveHistory();
-    console.log(`   ✅ Добавлено в историю: [${messageData.bracketNumber}] (${messageData.email})`);
   }
-  
+
   isAlreadyCommented(bracketNumber, email) {
     if (!bracketNumber || !email) return false;
-    
     const key = `${bracketNumber}|${email}`;
-    return this.commentedHistory.some(entry => entry.key === key);
+    return this.commentedHistory.some(e => e.key === key);
   }
 
   clearMarks() {
     document.querySelectorAll('.message-finder-label').forEach(el => el.remove());
-    document.querySelectorAll(this.messageSelector).forEach(el => {
-      el.style.border = '';
+    document.querySelectorAll(this.messageSelector).forEach(el => el.style.border = '');
+  }
+
+  // ========== КОНСОЛЬНЫЕ КОМАНДЫ ==========
+  async commentLastMessage() {
+    const blocks = document.querySelectorAll(this.messageSelector);
+    if (!blocks.length) return;
+    let maxId = -1, latest = null;
+    blocks.forEach(b => {
+      const id = DataExtractor.getMessageId(b);
+      if (id > maxId) { maxId = id; latest = b; }
     });
+    if (latest) await this.commentOnMessage(latest);
+  }
+
+  getStatus() {
+    return {
+      busy: this.busy,
+      queueLength: this.messageQueue.length,
+      pendingMessageId: this.pendingMessage ? DataExtractor.getMessageId(this.pendingMessage) : null,
+      lastMessageId: this.lastMessageId,
+      initialMaxId: this.initialMaxId,
+      messageCounter: this.messageCounter,
+      skipCounter: this.skipCounter
+    };
   }
 }
 
-// Запускаем
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    window.messageFinder = new MessageFinder();
-  });
-} else {
-  setTimeout(() => {
-    window.messageFinder = new MessageFinder();
-  }, 500);
+// ==================== ИНИЦИАЛИЗАЦИЯ ====================
+window.messageFinder = null;
+
+function init() {
+  window.messageFinder = new MessageFinder();
 }
 
-// Добавляем команду для переключения режима из консоли
-window.toggleDebugMode = function() {
-  DEBUG_MODE = !DEBUG_MODE;
-  console.log(`🔄 Режим отладки ${DEBUG_MODE ? 'ВКЛЮЧЕН' : 'ВЫКЛЮЧЕН'}`);
-};
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => setTimeout(init, 1000));
+} else {
+  setTimeout(init, 1000);
+}
+
+console.log('✅ Доступны команды: messageFinder.commentLastMessage(), messageFinder.getStatus(), messageFinder.pause(), messageFinder.resume()');
