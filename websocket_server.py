@@ -78,11 +78,16 @@ def update_main_keyboard(chat_id, message_id=None):
     """Обновляет клавиатуру во всех сообщениях или в конкретном"""
     try:
         if message_id:
-            bot.edit_message_reply_markup(
-                chat_id,
-                message_id,
-                reply_markup=get_main_keyboard()
-            )
+            # Сначала получаем текущее сообщение
+            try:
+                bot.edit_message_reply_markup(
+                    chat_id,
+                    message_id,
+                    reply_markup=get_main_keyboard()
+                )
+            except Exception as e:
+                if "message is not modified" not in str(e):
+                    logger.error(f"Ошибка обновления клавиатуры: {e}")
     except Exception as e:
         logger.error(f"Ошибка обновления клавиатуры: {e}")
 
@@ -341,13 +346,20 @@ def callback_handler(call):
     if call.message.chat.id != YOUR_CHAT_ID:
         return
     
+    # Получаем текущий текст сообщения
+    current_text = call.message.text
+    
     if call.data == "stats":
-        bot.edit_message_text(
-            format_stats(),
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=get_main_keyboard()
-        )
+        new_text = format_stats()
+        if new_text != current_text:
+            bot.edit_message_text(
+                new_text,
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            bot.answer_callback_query(call.id, "📊 Статистика уже актуальна")
     
     elif call.data == "toggle_pause":
         if state.extension_paused:
@@ -355,13 +367,16 @@ def callback_handler(call):
             if send_command_sync({"type": "resume"}):
                 state.extension_paused = False
                 bot.answer_callback_query(call.id, "▶️ Работа возобновлена")
-                bot.edit_message_text(
-                    "▶️ Работа расширения возобновлена.",
-                    call.message.chat.id,
-                    call.message.message_id,
-                    reply_markup=get_main_keyboard()
-                )
-                # Обновляем главную клавиатуру
+                
+                new_text = "▶️ Работа расширения возобновлена."
+                if new_text != current_text:
+                    bot.edit_message_text(
+                        new_text,
+                        call.message.chat.id,
+                        call.message.message_id,
+                        reply_markup=get_main_keyboard()
+                    )
+                
                 if hasattr(state, 'main_message_id'):
                     update_main_keyboard(call.message.chat.id, state.main_message_id)
             else:
@@ -371,25 +386,32 @@ def callback_handler(call):
             if send_command_sync({"type": "pause"}):
                 state.extension_paused = True
                 bot.answer_callback_query(call.id, "⏸️ Пауза")
-                bot.edit_message_text(
-                    "⏸️ Расширение поставлено на паузу.",
-                    call.message.chat.id,
-                    call.message.message_id,
-                    reply_markup=get_main_keyboard()
-                )
-                # Обновляем главную клавиатуру
+                
+                new_text = "⏸️ Расширение поставлено на паузу."
+                if new_text != current_text:
+                    bot.edit_message_text(
+                        new_text,
+                        call.message.chat.id,
+                        call.message.message_id,
+                        reply_markup=get_main_keyboard()
+                    )
+                
                 if hasattr(state, 'main_message_id'):
                     update_main_keyboard(call.message.chat.id, state.main_message_id)
             else:
                 bot.answer_callback_query(call.id, "❌ Нет подключения", show_alert=True)
     
     elif call.data == "status":
-        bot.edit_message_text(
-            format_status(),
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=get_main_keyboard()
-        )
+        new_text = format_status()
+        if new_text != current_text:
+            bot.edit_message_text(
+                new_text,
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            bot.answer_callback_query(call.id, "🔄 Статус не изменился")
     
     elif call.data == "settings":
         keyboard = InlineKeyboardMarkup(row_width=1)
@@ -399,15 +421,16 @@ def callback_handler(call):
             InlineKeyboardButton(f"⏸️ Автопауза: {'вкл' if state.settings['autoPauseAfterComment'] else 'выкл'}", callback_data="toggle_autopause"),
             InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")
         )
-        bot.edit_message_text(
-            "⚙️ <b>Настройки</b>\n\n"
-            "Используйте кнопки для изменения.\n"
-            "Для точной настройки используйте команды:\n"
-            "/log, /prob, /autopause",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=keyboard
-        )
+        
+        new_text = "⚙️ <b>Настройки</b>\n\nИспользуйте кнопки для изменения.\nДля точной настройки используйте команды:\n/log, /prob, /autopause"
+        
+        if new_text != current_text:
+            bot.edit_message_text(
+                new_text,
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=keyboard
+            )
     
     elif call.data == "cycle_log":
         new_level = (state.settings['logLevel'] + 1) % 3
@@ -421,6 +444,7 @@ def callback_handler(call):
             InlineKeyboardButton(f"⏸️ Автопауза: {'вкл' if state.settings['autoPauseAfterComment'] else 'выкл'}", callback_data="toggle_autopause"),
             InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")
         )
+        
         bot.edit_message_reply_markup(
             call.message.chat.id,
             call.message.message_id,
@@ -442,6 +466,7 @@ def callback_handler(call):
             InlineKeyboardButton(f"⏸️ Автопауза: {'вкл' if state.settings['autoPauseAfterComment'] else 'выкл'}", callback_data="toggle_autopause"),
             InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")
         )
+        
         bot.edit_message_reply_markup(
             call.message.chat.id,
             call.message.message_id,
@@ -461,6 +486,7 @@ def callback_handler(call):
             InlineKeyboardButton(f"⏸️ Автопауза: {'вкл' if new_value else 'выкл'}", callback_data="toggle_autopause"),
             InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")
         )
+        
         bot.edit_message_reply_markup(
             call.message.chat.id,
             call.message.message_id,
@@ -469,13 +495,16 @@ def callback_handler(call):
         bot.answer_callback_query(call.id, f"Автопауза: {'вкл' if new_value else 'выкл'}")
     
     elif call.data == "back_to_start":
-        bot.edit_message_text(
-            "👋 <b>Message Finder Bot</b>\n\n"
-            "Выберите действие:",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=get_main_keyboard()
-        )
+        new_text = "👋 <b>Message Finder Bot</b>\n\nВыберите действие:"
+        if new_text != current_text:
+            bot.edit_message_text(
+                new_text,
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            bot.answer_callback_query(call.id, "◀️ Уже в главном меню")
 
 # ==================== WEBSOCKET-СЕРВЕР ====================
 async def handle_websocket(websocket):
