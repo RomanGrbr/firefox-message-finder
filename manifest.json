@@ -2,16 +2,31 @@
   "manifest_version": 2,
   "name": "Message Finder",
   "version": "1.0",
-  "description": "Находит новые сообщения на странице",
-  
+  "description": "Автоматическое комментирование сообщений",
   "permissions": [
-    "<all_urls>"
+    "<all_urls>",
+    "storage",
+    "tabs"
   ],
-  
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"]
+      "js": ["content.js"],
+      "run_at": "document_idle"
     }
-  ]
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "browser_action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Message Finder",
+    "default_icon": {
+      "16": "icons/active.png",
+      "48": "icons/active.png"
+    }
+  },
+  "icons": {
+    "48": "icons/active.png"
+  }
 }

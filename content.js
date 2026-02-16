@@ -1,17 +1,11 @@
 console.log('🔥 Message Finder: расширение загружено!');
 
-// ==================== КОНСТАНТЫ ====================
-const DEBUG_MODE = true;
+// ==================== КОНСТАНТЫ НАСТРОЕК ====================
+const DEFAULT_LOG_LEVEL = 1;
+const DEFAULT_COMMENT_PROBABILITY = 70; // %
+const DEFAULT_AUTO_PAUSE = false;
 
-const DELAY_MIN = 2000;
-const DELAY_MAX = 5000;
-
-const SKIP_MIN = 4;
-const SKIP_MAX = 6;
-
-const COMMENT_COOLDOWN = 300000; // 5 минут в мс
-const TARGET_AUTHOR = 'Роман Гербер';
-
+const COMMENT_COOLDOWN = 300000; // 5 минут
 const RENDER_DELAYS = {
   INIT: 1000,
   HOVER: 800,
@@ -19,6 +13,25 @@ const RENDER_DELAYS = {
   INPUT: 500,
   SUBMIT: 1000
 };
+
+const SKIP_MIN = 4;
+const SKIP_MAX = 6;
+
+// ==================== ЛОГГЕР ====================
+class Logger {
+  constructor(initialLevel = DEFAULT_LOG_LEVEL) {
+    this.level = initialLevel;
+  }
+  setLevel(level) { this.level = level; }
+  info(...args) { if (this.level >= 1) console.log('📘', ...args); }
+  debug(...args) { if (this.level >= 2) console.log('🔍', ...args); }
+  warn(...args) { console.warn('⚠️', ...args); }
+  error(...args) { console.error('❌', ...args); }
+  success(...args) { if (this.level >= 1) console.log('✅', ...args); }
+  stat(...args) { if (this.level >= 1) console.log('📊', ...args); }
+}
+
+const log = new Logger();
 
 // ==================== УТИЛИТЫ ====================
 function delay(ms) {
@@ -157,48 +170,196 @@ class UIManager {
 
 // ==================== ВАЛИДАЦИЯ ====================
 class MessageValidator {
-  constructor(targetAuthor, cooldown) {
-    this.targetAuthor = targetAuthor;
-    this.cooldown = cooldown;
-  }
-
-  // Базовая проверка: номер не 1/20 и нет комментариев
-  basicValidation(number, hasComments) {
+  isValidNumber(number) {
     if (number === null) return false;
-    if (number === 1 || number === 20) return false;
-    if (hasComments) return false;
-    return true;
-  }
-
-  isTargetAuthor(element) {
-    const author = DataExtractor.getMessageAuthor(element);
-    return author === this.targetAuthor;
+    return number !== 1 && number !== 20;
   }
 }
 
-// ==================== ЗАГЛУШКА ДЛЯ TELEGRAM ====================
-class TelegramNotifier {
-  constructor() {
-    this.enabled = false;
-    this.commandListeners = [];
+// ==================== WEBSOCKET КЛИЕНТ ====================
+class WebSocketClient {
+  constructor(messageFinder) {
+    this.messageFinder = messageFinder;
+    this.ws = null;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 10;
+    this.reconnectDelay = 3000;
+    this.connect();
   }
 
-  enable() { this.enabled = true; }
-  disable() { this.enabled = false; }
-
-  async sendMessage(text) {
-    if (!this.enabled) return;
-    console.log(`[TELEGRAM] ${text}`);
-    // Здесь будет реальный API
+  connect() {
+    try {
+      console.log('🔄 Попытка подключения к WebSocket серверу...');
+      this.ws = new WebSocket('ws://localhost:8765');
+      
+      this.ws.onopen = () => {
+        console.log('✅ WebSocket подключен к серверу');
+        console.log('📊 Отправляем начальную статистику...');
+        this.reconnectAttempts = 0;
+        
+        // Отправляем статистику сразу после подключения
+        setTimeout(() => {
+          this.sendStats();
+          this.sendLog(1, 'WebSocket подключен');
+        }, 500);
+      };
+      
+      this.ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          console.log('📩 Получена команда от сервера:', data);
+          
+          if (data.type === 'connected') {
+            console.log('🖐️ Сервер подтвердил подключение:', data.message);
+            this.sendStats();
+          } else {
+            this.handleCommand(data);
+          }
+        } catch (e) {
+          console.error('❌ Ошибка парсинга сообщения:', e);
+        }
+      };
+      
+      this.ws.onclose = (event) => {
+        console.log(`🔌 WebSocket отключен. Код: ${event.code}, Причина: ${event.reason || 'нет'}`);
+        this.reconnect();
+      };
+      
+      this.ws.onerror = (error) => {
+        console.error('❌ WebSocket ошибка:', error);
+      };
+      
+    } catch (e) {
+      console.error('❌ Ошибка подключения WebSocket:', e);
+      this.reconnect();
+    }
   }
 
-  onCommand(callback) {
-    this.commandListeners.push(callback);
+  reconnect() {
+    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      this.reconnectAttempts++;
+      console.log(`🔄 Попытка переподключения ${this.reconnectAttempts}/${this.maxReconnectAttempts} через ${this.reconnectDelay/1000}с...`);
+      setTimeout(() => this.connect(), this.reconnectDelay);
+    } else {
+      console.log('❌ Превышено количество попыток переподключения');
+    }
   }
 
-  // Заглушка для получения команд (можно вызывать вручную из консоли)
-  simulateCommand(cmd) {
-    this.commandListeners.forEach(fn => fn(cmd));
+  sendStatusUpdate() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    
+    try {
+        const status = this.messageFinder.getStatus();
+        this.ws.send(JSON.stringify({
+        type: 'status_update',
+        paused: status.paused
+        }));
+        console.log('📤 Отправлен статус паузы:', status.paused);
+    } catch (e) {
+        console.error('❌ Ошибка отправки статуса:', e);
+    }
+    }
+
+  handleCommand(data) {
+    const mf = this.messageFinder;
+    if (!mf) return;
+    
+    switch (data.type) {
+      case 'pause':
+        console.log('⏸️ Получена команда паузы');
+        mf.pause();
+        break;
+      case 'resume':
+        console.log('▶️ Получена команда возобновления');
+        mf.resume();
+        break;
+      case 'setLogLevel':
+        if (data.level !== undefined) {
+          console.log(`📊 Устанавливаем уровень логов: ${data.level}`);
+          if (mf.log && mf.log.setLevel) {
+            mf.log.setLevel(data.level);
+          }
+        }
+        break;
+      case 'setProbability':
+        if (data.value !== undefined) {
+          console.log(`🎲 Устанавливаем вероятность: ${data.value}%`);
+          mf.commentProbability = data.value / 100;
+        }
+        break;
+      case 'setAutoPause':
+        if (data.value !== undefined) {
+          console.log(`⏸️ Устанавливаем автопаузу: ${data.value}`);
+          mf.autoPauseAfterComment = data.value;
+        }
+        break;
+      case 'requestStats':
+        console.log('📊 Запрос статистики от сервера');
+        this.sendStats();
+        break;
+      default:
+        console.log('Неизвестная команда:', data.type);
+    }
+  }
+
+  sendComment(commentData) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.log('❌ WebSocket не подключен, комментарий не отправлен');
+      return;
+    }
+    
+    try {
+      const message = JSON.stringify({
+        type: 'comment',
+        data: commentData
+      });
+      this.ws.send(message);
+      console.log('📤 Отправлен комментарий в WebSocket');
+    } catch (e) {
+      console.error('❌ Ошибка отправки комментария:', e);
+    }
+  }
+
+  sendStats() {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.log('❌ WebSocket не подключен, статистика не отправлена');
+      return;
+    }
+    
+    try {
+      if (this.messageFinder) {
+        const status = this.messageFinder.getStatus();
+        const message = JSON.stringify({
+          type: 'stats',
+          data: status.stats
+        });
+        this.ws.send(message);
+        console.log('📊 Отправлена статистика в WebSocket:', status.stats);
+      }
+    } catch (e) {
+      console.error('❌ Ошибка отправки статистики:', e);
+    }
+  }
+
+  sendLog(level, message) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    
+    try {
+      this.ws.send(JSON.stringify({
+        type: 'log',
+        level: level,
+        message: message,
+        timestamp: Date.now()
+      }));
+    } catch (e) {
+      console.error('❌ Ошибка отправки лога:', e);
+    }
+  }
+
+  disconnect() {
+    if (this.ws) {
+      this.ws.close();
+    }
   }
 }
 
@@ -216,24 +377,81 @@ class MessageFinder {
     this.skipCounter = this.getRandomSkip();
 
     this.ui = new UIManager();
-    this.validator = new MessageValidator(TARGET_AUTHOR, COMMENT_COOLDOWN);
-    this.telegram = new TelegramNotifier();
+    this.validator = new MessageValidator();
+    
+    // WebSocket клиент
+    this.wsClient = new WebSocketClient(this);
 
-    // Для управления очередью и блокировкой
-    this.busy = false;
-    this.pendingMessage = null;        // сообщение, ожидающее таймера
+    // Логика ожидания
+    this.waitingForCooldown = false;
+    this.myCommentedIds = new Set();
+    this.pendingMessage = null;
     this.pendingTimeout = null;
-    this.messageQueue = [];            // очередь сообщений, пришедших во время busy
+    this.messageQueue = [];
+    this.indicatorObserver = null;
 
-    // Хранилище времени обнаружения сообщений (id -> timestamp)
+    // Статистика
+    this.stats = { commented: 0, skipped: 0, ignored: 0 };
+
+    // Состояние паузы
+    this.paused = false;
+
+    // Настройки
+    this.commentProbability = DEFAULT_COMMENT_PROBABILITY / 100;
+    this.autoPauseAfterComment = DEFAULT_AUTO_PAUSE;
+
     this.detectedTimes = new Map();
 
     this.loadHistory();
+    this.loadSettings();
     this.initialize();
+
+    // Слушаем команды из background
+    browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      console.log('content: получено сообщение', msg);
+      if (msg.type === 'PAUSE') {
+        this.pause();
+        sendResponse({ status: 'paused' });
+      } else if (msg.type === 'RESUME') {
+        this.resume();
+        sendResponse({ status: 'resumed' });
+      } else if (msg.type === 'GET_STATS') {
+        sendResponse(this.stats);
+      } else if (msg.type === 'SETTINGS_UPDATED') {
+        this.applySettings(msg.settings);
+      }
+    });
   }
 
+  // ВСЕ МЕТОДЫ ДОЛЖНЫ БЫТЬ ВНУТРИ КЛАССА
   getRandomSkip() {
     return Math.floor(Math.random() * (SKIP_MAX - SKIP_MIN + 1)) + SKIP_MIN;
+  }
+
+  async loadSettings() {
+    try {
+      const result = await browser.storage.local.get('settings');
+      if (result.settings) {
+        this.applySettings(result.settings);
+      }
+    } catch (e) {
+      log.error('Ошибка загрузки настроек:', e);
+    }
+  }
+
+  applySettings(settings) {
+    if (settings.logLevel !== undefined) {
+      log.setLevel(settings.logLevel);
+      log.info(`Уровень логирования установлен: ${settings.logLevel}`);
+    }
+    if (settings.commentProbability !== undefined) {
+      this.commentProbability = settings.commentProbability / 100;
+      log.info(`Вероятность комментирования: ${this.commentProbability * 100}%`);
+    }
+    if (settings.autoPauseAfterComment !== undefined) {
+      this.autoPauseAfterComment = settings.autoPauseAfterComment;
+      log.info(`Автопауза после комментария: ${this.autoPauseAfterComment ? 'вкл' : 'выкл'}`);
+    }
   }
 
   async initialize() {
@@ -294,7 +512,7 @@ class MessageFinder {
 
   observeNewMessages() {
     const observer = new MutationObserver(mutations => {
-      if (!this.initializationComplete) return;
+      if (!this.initializationComplete || this.paused) return;
       let newMessages = [];
       mutations.forEach(mut => {
         if (mut.addedNodes.length) {
@@ -319,25 +537,23 @@ class MessageFinder {
       const id = DataExtractor.getMessageId(el);
       if (id <= this.initialMaxId) continue;
 
-      // Сохраняем время обнаружения
       if (!this.detectedTimes.has(id)) {
         this.detectedTimes.set(id, Date.now());
       }
 
-      // Если уже обрабатывали это сообщение (по id)
       if (id <= this.lastProcessedId) continue;
       this.lastProcessedId = id;
       this.lastMessageId = id;
 
-      // Пропуск по счётчику
       this.messageCounter++;
       if (this.messageCounter % this.skipCounter === 0) {
         this.skipCounter = this.getRandomSkip();
+        this.stats.skipped++;
+        log.info(`⏭️ Пропущено по счётчику (сообщение #${this.messageCounter})`);
         continue;
       }
 
-      // Если заняты, кладём в очередь
-      if (this.busy) {
+      if (this.pendingMessage) {
         this.messageQueue.push(el);
         continue;
       }
@@ -350,102 +566,204 @@ class MessageFinder {
     const text = DataExtractor.getMessageText(element);
     const number = DataExtractor.getMessageNumber(text);
     const hasComments = DataExtractor.hasCommentsIndicator(element);
+    const id = DataExtractor.getMessageId(element);
 
-    if (!this.validator.basicValidation(number, hasComments)) {
-      await this.handleNonTargetMessage(element);
+    if (hasComments && !this.myCommentedIds.has(id)) {
+      if (this.pendingMessage && DataExtractor.getMessageId(this.pendingMessage) === id) {
+        this.cancelWaiting();
+        log.info(`🔔 Чужой комментарий на ожидаемом сообщении #${id}, ожидание отменено`);
+      }
+      this.stats.ignored++;
       return;
     }
 
-    // Проверяем автора
-    const isTarget = this.validator.isTargetAuthor(element);
+    if (!this.validator.isValidNumber(number)) {
+      this.stats.ignored++;
+      return;
+    }
 
-    if (isTarget) {
-      // Ставим в ожидание на 5 минут от времени обнаружения
-      const detectedTime = this.detectedTimes.get(DataExtractor.getMessageId(element));
+    if (Math.random() > this.commentProbability) {
+      this.stats.skipped++;
+      log.info(`🎲 Случайный пропуск (вероятность ${this.commentProbability * 100}%)`);
+      return;
+    }
+
+    if (this.waitingForCooldown) {
+      const detectedTime = this.detectedTimes.get(id);
       const timePassed = Date.now() - detectedTime;
       const waitTime = Math.max(0, COMMENT_COOLDOWN - timePassed);
 
       if (waitTime > 0) {
-        this.busy = true;
         this.pendingMessage = element;
-        console.log(`⏳ Ожидание ${waitTime/1000}с перед комментированием (автор ${TARGET_AUTHOR})`);
+        log.info(`⏳ Ожидание ${Math.round(waitTime / 1000)}с перед комментированием`);
+
+        this.watchForCommentIndicator(element, id);
 
         this.pendingTimeout = setTimeout(async () => {
-          // По истечении таймера комментируем сообщение
-          await this.commentOnMessage(this.pendingMessage);
+          const hasCommentsNow = DataExtractor.hasCommentsIndicator(element);
+          if (hasCommentsNow) {
+            this.cancelWaiting();
+            await this.processQueue();
+            return;
+          }
+
+          await this.commentOnMessage(element);
           this.pendingMessage = null;
           this.pendingTimeout = null;
-          this.busy = false;
-          // Обрабатываем накопившуюся очередь
+          if (this.indicatorObserver) {
+            this.indicatorObserver.disconnect();
+            this.indicatorObserver = null;
+          }
           await this.processQueue();
         }, waitTime);
       } else {
-        // Уже прошло 5 минут (например, если сообщение долго висело до обнаружения)
         await this.commentOnMessage(element);
       }
     } else {
-      // Автор не целевой – комментируем сразу
       await this.commentOnMessage(element);
     }
   }
 
-  async handleNonTargetMessage(element) {
-    const panel = await this.ui.openCommentPanel(element);
-    if (!panel) return;
-
-    const messagesInPanel = this.ui.getMessagesInPanel(panel);
-    if (messagesInPanel.length > 1) {
-      const last = this.ui.getLastMessageInPanel(panel);
-      // Можно сохранить информацию о последнем комментаторе, если нужно
-    }
-
-    await this.ui.closePanel(panel);
-  }
-
   async commentOnMessage(element) {
     const panel = await this.ui.openCommentPanel(element);
-    if (!panel) return;
+    if (!panel) return false;
 
     const messagesInPanel = this.ui.getMessagesInPanel(panel);
     if (messagesInPanel.length > 1) {
-      // Уже есть комментарии – не наши
       await this.ui.closePanel(panel);
-      return;
+      return false;
     }
 
     const success = await this.ui.enterComment(panel, '+');
     if (success) {
-      await this.ui.submitComment(panel);
-      await this.telegram.sendMessage(`Прокомментировано сообщение ID ${DataExtractor.getMessageId(element)}`);
+        await this.ui.submitComment(panel);
+        const id = DataExtractor.getMessageId(element);
+        const text = DataExtractor.getMessageText(element);
+        const link = element.querySelector('a[href*="st.yandex-team.ru"]')?.href || '';
+        const number = DataExtractor.getMessageNumber(text);
+        const author = DataExtractor.getMessageAuthor(element);
+        const email = DataExtractor.getMessageEmail(text);
+        
+        this.myCommentedIds.add(id);
+        this.waitingForCooldown = true;
+        this.stats.commented++;
+        
+        this.wsClient.sendComment({
+            id: id,
+            text: text,
+            link: link,
+            number: number,
+            author: author,
+            email: email,
+            timestamp: Date.now()
+        });
+        
+        this.wsClient.sendStats();
+        this.wsClient.sendLog(1, `Прокомментировано сообщение ID ${id}`);
+        
+        if (this.autoPauseAfterComment) {
+            log.info('⏸️ Автопауза после комментария');
+            this.pause();
+        }
     }
 
     await this.ui.closePanel(panel);
+    return success;
+  }
+
+  watchForCommentIndicator(element, messageId) {
+    if (this.indicatorObserver) this.indicatorObserver.disconnect();
+    this.indicatorObserver = new MutationObserver((mutations) => {
+      for (const mut of mutations) {
+        if (mut.addedNodes.length) {
+          for (const node of mut.addedNodes) {
+            if (node.nodeType === Node.ELEMENT_NODE) {
+              if (node.matches?.('.flex.flex-wrap.gap-1 button') || node.querySelector?.('.flex.flex-wrap.gap-1 button')) {
+                log.debug(`👀 Замечен чужой комментарий на сообщении #${messageId}`);
+                this.cancelWaiting();
+                return;
+              }
+            }
+          }
+        }
+      }
+    });
+    this.indicatorObserver.observe(element, { childList: true, subtree: true });
+  }
+
+  cancelWaiting() {
+    if (this.pendingTimeout) {
+      clearTimeout(this.pendingTimeout);
+      this.pendingTimeout = null;
+    }
+    if (this.indicatorObserver) {
+      this.indicatorObserver.disconnect();
+      this.indicatorObserver = null;
+    }
+    this.pendingMessage = null;
+    this.waitingForCooldown = false;
+    log.info('⏹️ Ожидание отменено');
   }
 
   async processQueue() {
-    while (this.messageQueue.length > 0 && !this.busy) {
+    while (this.messageQueue.length > 0 && !this.pendingMessage && !this.paused) {
       const next = this.messageQueue.shift();
       await this.handleNewMessage(next);
     }
   }
 
-  // ========== УПРАВЛЕНИЕ ПАУЗОЙ (ЗАГЛУШКИ ДЛЯ TELEGRAM) ==========
-  pause() {
-    if (this.pendingTimeout) {
-      clearTimeout(this.pendingTimeout);
-      this.pendingTimeout = null;
+  sendStatusToPopup() {
+    try {
+        browser.runtime.sendMessage({
+        type: 'STATUS_UPDATED',
+        status: this.getStatus()
+        }).catch(() => {
+        // Popup может быть закрыт - игнорируем
+        });
+    } catch (e) {
+        // Игнорируем ошибки
     }
-    this.busy = true;
-    console.log('⏸️ Работа приостановлена');
-  }
+    }
+
+  pause() {
+    if (this.paused) return;
+    this.paused = true;
+    if (this.pendingTimeout) {
+        clearTimeout(this.pendingTimeout);
+        this.pendingTimeout = null;
+    }
+    if (this.indicatorObserver) {
+        this.indicatorObserver.disconnect();
+        this.indicatorObserver = null;
+    }
+    console.log('content: расширение на паузе');
+    log.info('⏸️ Расширение на паузе');
+    
+    // Отправляем статус в WebSocket
+    if (this.wsClient) {
+        this.wsClient.sendStatusUpdate();
+    }
+    
+    // Отправляем статус в popup
+    this.sendStatusToPopup();
+    }
 
   resume() {
-    this.busy = false;
-    console.log('▶️ Работа возобновлена');
+    if (!this.paused) return;
+    this.paused = false;
+    console.log('content: работа возобновлена');
+    log.info('▶️ Работа возобновлена');
     this.processQueue();
-  }
+    
+    // Отправляем статус в WebSocket
+    if (this.wsClient) {
+        this.wsClient.sendStatusUpdate();
+    }
+    
+    // Отправляем статус в popup
+    this.sendStatusToPopup();
+    }
 
-  // ========== ИСТОРИЯ ==========
   loadHistory() {
     try {
       const saved = localStorage.getItem('messageFinderHistory');
@@ -485,7 +803,6 @@ class MessageFinder {
     document.querySelectorAll(this.messageSelector).forEach(el => el.style.border = '');
   }
 
-  // ========== КОНСОЛЬНЫЕ КОМАНДЫ ==========
   async commentLastMessage() {
     const blocks = document.querySelectorAll(this.messageSelector);
     if (!blocks.length) return;
@@ -499,14 +816,33 @@ class MessageFinder {
 
   getStatus() {
     return {
-      busy: this.busy,
-      queueLength: this.messageQueue.length,
+      paused: this.paused,
+      waitingForCooldown: this.waitingForCooldown,
       pendingMessageId: this.pendingMessage ? DataExtractor.getMessageId(this.pendingMessage) : null,
+      queueLength: this.messageQueue.length,
+      myCommentedCount: this.myCommentedIds.size,
+      stats: this.stats,
       lastMessageId: this.lastMessageId,
       initialMaxId: this.initialMaxId,
       messageCounter: this.messageCounter,
       skipCounter: this.skipCounter
     };
+  }
+
+  // Добавляем методы для ручного управления
+  forceSendStats() {
+    console.log('📊 Принудительная отправка статистики');
+    this.wsClient.sendStats();
+  }
+  
+  checkWebSocket() {
+    if (this.wsClient && this.wsClient.ws) {
+      const state = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'][this.wsClient.ws.readyState];
+      console.log(`🔌 WebSocket статус: ${state} (${this.wsClient.ws.readyState})`);
+      return this.wsClient.ws.readyState;
+    }
+    console.log('❌ WebSocket не инициализирован');
+    return -1;
   }
 }
 
@@ -523,4 +859,11 @@ if (document.readyState === 'loading') {
   setTimeout(init, 1000);
 }
 
-console.log('✅ Доступны команды: messageFinder.commentLastMessage(), messageFinder.getStatus(), messageFinder.pause(), messageFinder.resume()');
+// ==================== СЛУШАЕМ СООБЩЕНИЯ ИЗ POPUP ====================
+browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'GET_STATUS') {
+    const mf = window.messageFinder;
+    if (mf) sendResponse(mf.getStatus());
+    else sendResponse({ error: 'not initialized' });
+  }
+});

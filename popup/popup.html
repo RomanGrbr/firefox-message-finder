@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { width: 280px; padding: 10px; font-family: Arial, sans-serif; }
+    h3 { margin-top: 0; }
+    .status { display: flex; align-items: center; margin: 10px 0; }
+    .indicator { width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; }
+    .green { background-color: #4caf50; }
+    .red { background-color: #f44336; }
+    button { width: 100%; padding: 8px; margin: 5px 0; cursor: pointer; }
+    .stats { margin-top: 10px; font-size: 0.9em; }
+    .stats div { margin: 3px 0; }
+    hr { margin: 10px 0; }
+    .setting { margin: 8px 0; display: flex; align-items: center; justify-content: space-between; }
+    .setting label { flex: 1; }
+    .setting input, .setting select { width: 100px; }
+  </style>
+</head>
+<body>
+  <h3>Message Finder</h3>
+  <div class="status">
+    <span class="indicator" id="statusIndicator"></span>
+    <span id="statusText">Загрузка...</span>
+  </div>
+  <button id="togglePause">Пауза / Возобновить</button>
+  <hr>
+  <div class="stats">
+    <div>Прокомментировано: <span id="statCommented">0</span></div>
+    <div>Пропущено: <span id="statSkipped">0</span></div>
+    <div>Игнорировано: <span id="statIgnored">0</span></div>
+    <div>В очереди: <span id="queueLength">0</span></div>
+    <div>Ожидание: <span id="waitingStatus">нет</span></div>
+  </div>
+  <hr>
+  <div class="setting">
+    <label>Уровень логов:</label>
+    <select id="logLevel">
+      <option value="0">Выкл</option>
+      <option value="1" selected>Основные</option>
+      <option value="2">Отладка</option>
+    </select>
+  </div>
+  <div class="setting">
+    <label>Вероятность (%):</label>
+    <input type="number" id="commentProbability" min="0" max="100" step="1" value="70">
+  </div>
+  <div class="setting">
+    <label>Автопауза после комментария:</label>
+    <input type="checkbox" id="autoPause">
+  </div>
+  <hr>
+  <button id="saveSettings">Сохранить настройки</button>
+  <script src="popup.js"></script>
+</body>
+</html>
